@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: model_choice
+Version: 0.1.0
+Summary: Universal LLM model selector and caller -- pick the right model for the job
+Requires-Python: >=3.10
+Requires-Dist: litellm
+Requires-Dist: pyyaml
