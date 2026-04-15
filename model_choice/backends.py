@@ -2,8 +2,19 @@
 
 import os
 import subprocess
+from dataclasses import dataclass
+from typing import Optional
 
 from .registry import Provider
+
+
+@dataclass
+class GenerateResult:
+    """Result from a generate call, including usage stats."""
+    text: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
 
 
 def call_litellm(
@@ -36,7 +47,13 @@ def call_litellm(
             kwargs["api_key"] = api_key
 
     resp = litellm.completion(**kwargs)
-    return resp.choices[0].message.content
+    usage = getattr(resp, 'usage', None)
+    return GenerateResult(
+        text=resp.choices[0].message.content,
+        prompt_tokens=getattr(usage, 'prompt_tokens', 0) if usage else 0,
+        completion_tokens=getattr(usage, 'completion_tokens', 0) if usage else 0,
+        total_tokens=getattr(usage, 'total_tokens', 0) if usage else 0,
+    )
 
 
 def call_cli(
@@ -67,7 +84,8 @@ def call_cli(
             f"{provider.cli_cmd} exited {result.returncode}: "
             f"{result.stderr[:500]}"
         )
-    return result.stdout
+    # CLI backends don't report token counts
+    return GenerateResult(text=result.stdout)
 
 
 def call(
@@ -77,7 +95,7 @@ def call(
     max_tokens: int = 2000,
     json_mode: bool = False,
     system: str | None = None,
-) -> str:
+) -> GenerateResult:
     """Unified dispatch. Applies json_mode prompt suffix, then routes."""
     if json_mode:
         prompt += (

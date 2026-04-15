@@ -26,10 +26,20 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Show which model was selected")
     parser.add_argument("-s", "--system", help="System prompt")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Skip response cache for this call")
+    parser.add_argument("--no-fallback", action="store_true",
+                        help="Don't retry with other providers on failure")
+    parser.add_argument("--stats", action="store_true",
+                        help="Show usage stats and exit")
+    parser.add_argument("--clear-cache", action="store_true",
+                        help="Clear the response cache and exit")
 
     args = parser.parse_args()
 
-    from model_choice import list_models, generate, generate_json, pick
+    from model_choice import (list_models, generate, generate_json, pick,
+                               cost_summary, cache_stats, clear_cache,
+                               _resolve_complexity)
 
     if args.list:
         models = list_models()
@@ -39,12 +49,32 @@ def main():
                   f"{m['model']:30s} {m['label']}")
         sys.exit(0)
 
+    if args.stats:
+        summary = cost_summary()
+        totals = cache_stats()
+        print("Provider usage:")
+        if not summary:
+            print("  (no calls yet)")
+        for name, stats in summary.items():
+            print(f"  {name:10s} {stats['calls']} calls "
+                  f"({stats['failures']} failed) "
+                  f"{stats['total_tokens']} tokens")
+        print()
+        print(f"Cache: {totals['entries']} entries, "
+              f"{totals['hits']} hits / {totals['misses']} misses "
+              f"({totals['hit_rate']:.0%} hit rate)")
+        sys.exit(0)
+
+    if args.clear_cache:
+        clear_cache()
+        print("Cache cleared.")
+        sys.exit(0)
+
     if not args.prompt:
-        parser.error("prompt is required unless --list is given")
+        parser.error("prompt is required unless --list/--stats/--clear-cache is given")
 
     if args.verbose:
         # Show which model would be picked (runs classifier if auto)
-        from model_choice import _resolve_complexity
         resolved = _resolve_complexity(args.complexity, args.prompt or "")
         provider = pick(complexity=resolved, model=args.model)
         if provider:
@@ -57,6 +87,9 @@ def main():
             print("[model_choice] no model available", file=sys.stderr)
             sys.exit(1)
 
+    use_cache = not args.no_cache
+    use_fallback = not args.no_fallback
+
     try:
         if args.json:
             result = generate_json(
@@ -66,6 +99,8 @@ def main():
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 system=args.system,
+                use_cache=use_cache,
+                fallback=use_fallback,
             )
             print(json.dumps(result, indent=2))
         else:
@@ -76,6 +111,8 @@ def main():
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 system=args.system,
+                use_cache=use_cache,
+                fallback=use_fallback,
             )
             print(result)
     except (RuntimeError, ValueError) as e:

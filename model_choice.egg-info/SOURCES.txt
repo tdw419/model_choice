@@ -1,11 +1,14 @@
 pyproject.toml
 model_choice/__init__.py
 model_choice/backends.py
+model_choice/cache.py
 model_choice/classifier.py
 model_choice/cli.py
 model_choice/config.py
+model_choice/fallback.py
 model_choice/parsers.py
 model_choice/registry.py
+model_choice/tracking.py
 model_choice.egg-info/PKG-INFO
 model_choice.egg-info/SOURCES.txt
 model_choice.egg-info/dependency_links.txt

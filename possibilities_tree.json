@@ -1,0 +1,19 @@
+{
+  "id": "36fcd5d8",
+  "title": "Root",
+  "description": "What features should we add to model_choice, a universal LLM model selector and caller that already has: auto-classification (easy/hard/extreme -> Ollama/ZAI/Claude), tiered YAML config, unified backend dispatch (litellm + CLI), JSON mode, CLI tool. What's missing? What would make this genuinely useful for other AI agents and tools?",
+  "enables": [],
+  "risk": "",
+  "category": "",
+  "depth": 0,
+  "parent_id": null,
+  "children": [],
+  "fertility_score": 0.0,
+  "direct_fertility": 0,
+  "total_descendants": 0,
+  "model_used": "",
+  "explored": true,
+  "pruned": false,
+  "prune_reason": "",
+  "created_at": 1776275681.4051216
+}
