@@ -129,7 +129,11 @@ class Registry:
         complexity: str = "balanced",
         model: Optional[str] = None,
     ) -> Optional[Provider]:
-        """Pick the cheapest available provider for the given complexity.
+        """Pick a provider for the given complexity.
+
+        Normal modes: picks the cheapest available at or below the tier.
+        "thorough_strong": picks the STRONGEST available (last in list).
+            Used by auto-classification for extreme-difficulty tasks.
 
         If model is specified, find it by model name or provider name,
         ignoring the complexity filter.
@@ -142,6 +146,26 @@ class Registry:
             for p in self.providers:
                 if p.model == model or p.provider == model:
                     return p if p.available else None
+            return None
+
+        # thorough_strong: pick STRONGEST available (last in list)
+        if complexity == "thorough_strong":
+            for p in reversed(self.providers):
+                if p.available:
+                    return p
+            return None
+
+        # balanced_only: pick cheapest provider at exactly balanced tier
+        if complexity == "balanced_only":
+            for p in self.providers:
+                tier = COMPLEXITY_ORDER.get(p.complexity, 1)
+                if tier == 1 and p.available:
+                    return p
+            # Fallback: try thorough if nothing at balanced
+            for p in self.providers:
+                tier = COMPLEXITY_ORDER.get(p.complexity, 2)
+                if tier >= 1 and p.available:
+                    return p
             return None
 
         # Pick cheapest available at or below requested complexity

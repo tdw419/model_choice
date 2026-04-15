@@ -1,6 +1,7 @@
 pyproject.toml
 model_choice/__init__.py
 model_choice/backends.py
+model_choice/classifier.py
 model_choice/cli.py
 model_choice/config.py
 model_choice/parsers.py

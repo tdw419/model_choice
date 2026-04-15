@@ -13,7 +13,7 @@ def main():
     parser.add_argument("prompt", nargs="?", help="Prompt to send")
     parser.add_argument(
         "-c", "--complexity",
-        choices=["fast", "balanced", "thorough"],
+        choices=["fast", "balanced", "thorough", "auto"],
         default="balanced",
     )
     parser.add_argument("-m", "--model", help="Specific model to use")
@@ -43,9 +43,16 @@ def main():
         parser.error("prompt is required unless --list is given")
 
     if args.verbose:
-        provider = pick(complexity=args.complexity, model=args.model)
+        # Show which model would be picked (runs classifier if auto)
+        from model_choice import _resolve_complexity
+        resolved = _resolve_complexity(args.complexity, args.prompt or "")
+        provider = pick(complexity=resolved, model=args.model)
         if provider:
-            print(f"[model_choice] {provider.label}", file=sys.stderr)
+            if args.complexity == "auto":
+                print(f"[model_choice] classified as {resolved}, using {provider.label}",
+                      file=sys.stderr)
+            else:
+                print(f"[model_choice] {provider.label}", file=sys.stderr)
         else:
             print("[model_choice] no model available", file=sys.stderr)
             sys.exit(1)

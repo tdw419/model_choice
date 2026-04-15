@@ -5,6 +5,9 @@ Usage:
     from model_choice import generate
     text = generate("explain quicksort", complexity="fast")
 
+    # Auto-classify: let the local model decide difficulty
+    text = generate("explain quicksort", complexity="auto")
+
     # Get parsed JSON
     from model_choice import generate_json
     data = generate_json("list 5 colors as JSON", complexity="fast")
@@ -24,15 +27,23 @@ Usage:
 
     # CLI:
     #   model_choice "explain recursion" -c fast
-    #   model_choice "architect a DB" -c thorough -v
+    #   model_choice "architect a DB" -c auto
     #   model_choice --list
 """
 
 from .registry import Registry, Provider
 from .backends import call
 from .parsers import parse_json_output
+from .classifier import classify
 
 _registry = Registry()
+
+
+def _resolve_complexity(complexity: str, prompt: str) -> str:
+    """Resolve 'auto' to a real tier. Pass-through for everything else."""
+    if complexity == "auto":
+        return classify(prompt, _registry)
+    return complexity
 
 
 def generate(
@@ -49,7 +60,8 @@ def generate(
     Args:
         prompt: The text prompt.
         model: Exact model name or provider name. Overrides complexity.
-        complexity: "fast", "balanced", or "thorough".
+        complexity: "fast", "balanced", "thorough", or "auto".
+                    "auto" uses the local model to classify difficulty.
         temperature: Sampling temperature (litellm backends only).
         max_tokens: Max response tokens (litellm backends only).
         json_mode: If True, append JSON instruction to prompt.
@@ -63,10 +75,11 @@ def generate(
     Raises:
         RuntimeError: No available model found or backend error.
     """
-    provider = _registry.select(complexity=complexity, model=model)
+    resolved = _resolve_complexity(complexity, prompt)
+    provider = _registry.select(complexity=resolved, model=model)
     if not provider:
         raise RuntimeError(
-            f"No available model for complexity={complexity}"
+            f"No available model for complexity={resolved}"
             + (f" model={model}" if model else "")
         )
     return call(provider, prompt, temperature, max_tokens, json_mode, system)
