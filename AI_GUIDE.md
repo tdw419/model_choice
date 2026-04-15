@@ -8,7 +8,7 @@ A reusable Python package that picks the right LLM for the job and calls it. One
 
 **Where it lives:** `~/zion/projects/model_choice/`
 **Config:** `~/.config/model_choice/tiers.yaml` (auto-generated on first use)
-**587 lines total** across 6 source files.
+**1053 lines total** across 9 source files.
 
 ## Quick Reference
 
@@ -34,19 +34,32 @@ provider = pick(complexity="thorough")  # just select, don't call
 text = generate("explain quicksort", complexity="auto")      # -> easy -> Ollama
 text = generate("write a test suite", complexity="auto")     # -> hard -> ZAI
 text = generate("architect a DB system", complexity="auto")  # -> extreme -> Claude
+
+# With fallback and caching (on by default)
+text = generate("prompt", fallback=True, use_cache=True)
+
+# Usage stats (for long-running agents)
+from model_choice import cost_summary, cache_stats
+print(cost_summary())   # per-provider: calls, failures, tokens
+print(cache_stats())    # entries, hits, misses, hit_rate
 ```
 
 ## Architecture
 
 ```
-model_choice/           (680 lines total)
-  __init__.py   148 ln  Public API: generate(), generate_json(), choose(), pick(), list_models(), refresh()
-  registry.py   167 ln  Loads tiers.yaml, checks availability, selects provider (5 complexity modes)
-  backends.py    93 ln  Two backends: litellm (Ollama/ZAI) and CLI subprocess (Gemini/Claude)
-  classifier.py  80 ln  Auto-classification: asks local model to rate task difficulty
+model_choice/           (1053 lines total)
+  __init__.py   229 ln  Public API: generate(), generate_json(), choose(), pick(), list_models()
+                         Plus: cost_summary(), cache_stats(), clear_cache(), reset_stats()
+  registry.py   183 ln  Loads tiers.yaml, checks availability, selects provider (5 modes)
+  backends.py   111 ln  Two backends: litellm (Ollama/ZAI) and CLI subprocess (Gemini/Claude)
+                         GenerateResult dataclass with token usage
+  classifier.py  84 ln  Auto-classification: asks local model to rate task difficulty
+  fallback.py    83 ln  On failure, retries with next available provider in chain
+  cache.py       61 ln  In-memory LRU response cache, thread-safe, SHA-256 keyed
+  tracking.py    74 ln  Per-provider call/failure/token counters, thread-safe
   config.py      53 ln  Generates default tiers.yaml if missing
   parsers.py     51 ln  Robust JSON extraction from LLM output (handles markdown fences)
-  cli.py         92 ln  argparse CLI, installed as `model_choice` command
+  cli.py        124 ln  argparse CLI, installed as `model_choice` command
   pyproject.toml 16 ln  Dependencies: litellm, pyyaml
 ```
 
@@ -147,6 +160,8 @@ The main function. Picks a model, sends the prompt, returns raw text.
 | `max_tokens` | int | 2000 | Max response tokens (litellm only, ignored for CLI) |
 | `json_mode` | bool | False | Appends JSON instruction to prompt. Returns str, not parsed. |
 | `system` | str or None | None | System prompt (litellm only, ignored for CLI) |
+| `use_cache` | bool | True | Return cached response for identical (model, prompt, params) calls |
+| `fallback` | bool | True | On failure, retry with next available provider in chain |
 
 Raises: `RuntimeError` if no model available.
 
@@ -172,6 +187,26 @@ Returns list of dicts with keys: `provider`, `model`, `label`, `complexity`, `av
 
 Force re-check all provider availability. Useful if Ollama was started mid-session.
 
+### `cost_summary() -> dict`
+
+Returns per-provider usage: `{provider_name: {calls, failures, prompt_tokens, completion_tokens, total_tokens}}`.
+
+### `cost_totals() -> dict`
+
+Aggregated totals across all providers: `{calls, failures, prompt_tokens, completion_tokens, total_tokens, providers}`.
+
+### `cache_stats() -> dict`
+
+Returns `{entries, hits, misses, hit_rate}`. In-memory cache, per process.
+
+### `clear_cache()`
+
+Clear all cached responses.
+
+### `reset_stats()`
+
+Reset all cost tracking counters to zero.
+
 ### `parse_json_output(text: str) -> Any`
 
 Standalone function in `model_choice.parsers`. Extracts JSON from LLM text that may contain markdown fences, explanatory text, or other noise.
@@ -195,6 +230,10 @@ model_choice "prompt" [-c fast|balanced|thorough] [-m MODEL] [-t TEMP]
 | `--json` | `-j` | off | Parse response as JSON, pretty-print |
 | `--verbose` | `-v` | off | Print selected model to stderr |
 | `--system` | `-s` | | System prompt |
+| `--no-cache` | | off | Skip response cache for this call |
+| `--no-fallback` | | off | Don't retry with other providers on failure |
+| `--stats` | | off | Show usage stats and exit |
+| `--clear-cache` | | off | Clear response cache and exit |
 | `--list` | | off | List all providers and exit |
 
 ## The Config File
@@ -308,16 +347,23 @@ class LLMClient:
 - **OAuth CLIs need prior interactive login.** `gemini` and `claude` must be logged in interactively before they work in `-p` mode. If not authed, they'll error. model_choice only checks if the binary exists (`which`), not if the auth session is valid.
 - **`generate()` with `json_mode=True` returns a string, not parsed JSON.** Use `generate_json()` if you want the parsed object. `json_mode` just appends the instruction to the prompt; it doesn't change the return type.
 - **`parse_json_output` raises ValueError, not returns empty.** Unlike the original `parse_json_response` in possibilities/llm.py (which returns `[]` on failure), this raises. This is intentional -- silent empty returns mask errors. Wrap in try/except if you need fallback behavior.
+- **Cache and stats are in-memory, per-process.** Each Python process gets its own cache and cost tracker. CLI invocations start fresh each time. This is by design -- the library is meant for long-running agent processes, not one-shot CLI calls.
+- **Fallback tries next provider in config order.** If Ollama fails, it tries ZAI, then Gemini, then Claude. It does NOT re-try the same provider. Each provider gets exactly one attempt.
+- **Token counts are only available for litellm backends.** Ollama and ZAI report usage via litellm's response object. Gemini and Claude CLI tools don't report token counts, so those calls show 0 tokens in cost_summary().
+- **Cache is keyed on (model, prompt, temperature, max_tokens, json_mode, system).** If you change any parameter, it's a cache miss. Max 256 entries, LRU eviction.
 
 ## Project Layout
 
 ```
 ~/zion/projects/model_choice/
   model_choice/
-    __init__.py      # Public API + module-level Registry singleton
+    __init__.py      # Public API + module-level Registry, Cache, Tracker singletons
     registry.py      # Provider dataclass, Registry class (load/check/select)
-    backends.py      # call_litellm(), call_cli(), unified call()
+    backends.py      # call_litellm(), call_cli(), unified call() + GenerateResult
     classifier.py    # Auto-classification: local model rates task difficulty
+    fallback.py      # call_with_fallback(): retry chain on provider failure
+    cache.py         # ResponseCache: in-memory LRU, SHA-256 keyed, thread-safe
+    tracking.py      # CostTracker: per-provider call/token counters, thread-safe
     config.py        # DEFAULT_YAML string, generate_default_config()
     parsers.py       # parse_json_output() -- robust JSON from LLM text
     cli.py           # argparse CLI, entry point: model_choice.cli:main
