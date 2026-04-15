@@ -29,18 +29,24 @@ from model_choice import generate, generate_json, pick, list_models
 text = generate("prompt", complexity="fast")
 data = generate_json("prompt returning JSON", complexity="balanced")
 provider = pick(complexity="thorough")  # just select, don't call
+
+# Auto-classify: let the local model decide difficulty
+text = generate("explain quicksort", complexity="auto")      # -> easy -> Ollama
+text = generate("write a test suite", complexity="auto")     # -> hard -> ZAI
+text = generate("architect a DB system", complexity="auto")  # -> extreme -> Claude
 ```
 
 ## Architecture
 
 ```
-model_choice/           (587 lines total)
-  __init__.py   135 ln  Public API: generate(), generate_json(), choose(), pick(), list_models(), refresh()
-  registry.py   159 ln  Loads tiers.yaml, checks availability, selects cheapest provider
+model_choice/           (680 lines total)
+  __init__.py   148 ln  Public API: generate(), generate_json(), choose(), pick(), list_models(), refresh()
+  registry.py   167 ln  Loads tiers.yaml, checks availability, selects provider (5 complexity modes)
   backends.py    93 ln  Two backends: litellm (Ollama/ZAI) and CLI subprocess (Gemini/Claude)
+  classifier.py  80 ln  Auto-classification: asks local model to rate task difficulty
   config.py      53 ln  Generates default tiers.yaml if missing
   parsers.py     51 ln  Robust JSON extraction from LLM output (handles markdown fences)
-  cli.py         80 ln  argparse CLI, installed as `model_choice` command
+  cli.py         92 ln  argparse CLI, installed as `model_choice` command
   pyproject.toml 16 ln  Dependencies: litellm, pyyaml
 ```
 
@@ -61,17 +67,45 @@ model_choice/           (587 lines total)
 | `api_key` | Load key from `~/.bashrc`, check `os.environ.get(env_key)` | API key exists in env |
 | `oauth` | `subprocess.run(["which", cli_cmd])` | CLI tool is installed |
 
-### How Selection Works
+### How Auto-Classification Works
 
-Providers in tiers.yaml are ordered cheapest-first. The `complexity` field on each provider sets the minimum tier required to use it.
+When `complexity="auto"`, model_choice sends the prompt to the local Ollama model with a tiny classification request (~10 tokens). The local model rates the task as easy, hard, or extreme. This adds ~0.2-0.3s overhead (free after first call since the model stays loaded).
+
+Mapping:
+
+| Classification | Internal tier | Provider selected |
+|---|---|---|
+| easy | fast | Ollama (local, free) |
+| hard | balanced_only | ZAI glm-5.1 (API) |
+| extreme | thorough_strong | Claude Sonnet 4 (strongest available) |
+
+The classification prompt:
 
 ```
-complexity="fast"      -> only providers with complexity=fast       (Ollama)
-complexity="balanced"  -> fast + balanced providers                 (Ollama, ZAI)
-complexity="thorough"  -> all providers                              (Ollama, ZAI, Gemini, Claude)
+Rate this task's AI difficulty. Reply with exactly one word from: easy hard extreme
+
+easy = simple lookup, greeting, basic math, one-liner, list items
+hard = write code, analyze data, compare options, summarize, debug
+extreme = architect systems, design algorithms, deep analysis, multi-step reasoning
+
+Task: {your prompt}
 ```
 
-The selector walks the list in order and returns the first available provider at or below the requested tier. If you pass `model="zai"` or `model="openai/glm-5.1"`, it finds that specific provider (ignoring complexity filter).
+If classification fails (no local model, timeout, garbage response), it falls back to `balanced`.
+
+### Selection Logic Details
+
+The `select()` method supports 5 complexity modes:
+
+| Mode | Behavior |
+|---|---|
+| `"fast"` | Cheapest available with `complexity: fast` (Ollama) |
+| `"balanced"` | Cheapest available at or below balanced (Ollama, ZAI) |
+| `"thorough"` | Cheapest available at or below thorough (all) |
+| `"balanced_only"` | First available at exactly balanced tier, skips fast (ZAI only) |
+| `"thorough_strong"` | STRONGEST available, walks list backwards (Claude -> Gemini -> ZAI -> Ollama) |
+
+The `balanced_only` and `thorough_strong` modes are used internally by auto-classification. You can pass them directly too if you want precise control.
 
 ### How Backends Work
 
@@ -108,7 +142,7 @@ The main function. Picks a model, sends the prompt, returns raw text.
 |---|---|---|---|
 | `prompt` | str | required | The text prompt |
 | `model` | str or None | None | Exact model name or provider name. Overrides complexity. |
-| `complexity` | str | "balanced" | "fast", "balanced", or "thorough" |
+| `complexity` | str | "balanced" | "fast", "balanced", "thorough", or "auto" |
 | `temperature` | float | 0.7 | Sampling temp (litellm only, ignored for CLI) |
 | `max_tokens` | int | 2000 | Max response tokens (litellm only, ignored for CLI) |
 | `json_mode` | bool | False | Appends JSON instruction to prompt. Returns str, not parsed. |
@@ -154,7 +188,7 @@ model_choice "prompt" [-c fast|balanced|thorough] [-m MODEL] [-t TEMP]
 | Flag | Short | Default | What it does |
 |---|---|---|---|
 | prompt | (positional) | required | The prompt to send (not needed with --list) |
-| `--complexity` | `-c` | balanced | Selection tier |
+| `--complexity` | `-c` | balanced | Selection tier (fast, balanced, thorough, auto) |
 | `--model` | `-m` | auto | Force specific model or provider |
 | `--temperature` | `-t` | 0.7 | Sampling temperature |
 | `--max-tokens` | | 2000 | Max response tokens |
@@ -283,6 +317,7 @@ class LLMClient:
     __init__.py      # Public API + module-level Registry singleton
     registry.py      # Provider dataclass, Registry class (load/check/select)
     backends.py      # call_litellm(), call_cli(), unified call()
+    classifier.py    # Auto-classification: local model rates task difficulty
     config.py        # DEFAULT_YAML string, generate_default_config()
     parsers.py       # parse_json_output() -- robust JSON from LLM text
     cli.py           # argparse CLI, entry point: model_choice.cli:main
