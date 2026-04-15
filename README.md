@@ -14,6 +14,10 @@ text = generate("architect a distributed database", complexity="auto")
 # Call a specific model
 text = generate("write a haiku", model="gemini-2.5-flash")
 
+# Streaming -- iterate over chunks as they arrive
+for chunk in generate("explain recursion", stream=True):
+    print(chunk, end="", flush=True)
+
 # Get parsed JSON
 from model_choice import generate_json
 data = generate_json("list 5 colors as JSON", complexity="fast")
@@ -27,11 +31,13 @@ Autonomous agents and multi-model tools need to route prompts to the right provi
 
 - **Tier-based model selection** -- configure providers as `fast`, `balanced`, or `thorough`. Pick the complexity level, it picks the model.
 - **Auto-classification** -- set `complexity="auto"` and a local model rates the task difficulty, then selects the right tier.
+- **Streaming responses** -- `generate(prompt, stream=True)` returns a generator yielding text chunks. Works with both API and CLI backends.
 - **Fallback chains** -- if a provider fails, automatically tries the next one in config order. Transparent to callers.
-- **Response caching** -- same prompt + model + params = instant cached response. In-memory LRU (256 entries, SHA-256 keys). On by default.
+- **Persistent cache** -- SQLite-backed LRU cache survives process restarts. Same prompt + model + params = instant cached response. 256 entries, SHA-256 keys, WAL mode. On by default.
 - **Cost tracking** -- per-provider call counts, failure counts, token usage. `cost_summary()` for breakdowns, `--stats` on CLI.
 - **Multiple backends** -- LiteLLM (API providers) and CLI (OAuth tools like `gemini`, `claude`).
 - **Zero-config CLI** -- `model_choice "explain recursion" -c fast`
+- **27 tests** covering cache, streaming, backends, and backwards compatibility.
 
 ## Install
 
@@ -87,7 +93,7 @@ Provider order = priority. Fast providers get tried first. Complexity levels sta
 
 ```python
 from model_choice import (
-    generate,           # prompt -> string
+    generate,           # prompt -> string (or generator if stream=True)
     generate_json,      # prompt -> parsed dict/list
     pick,               # returns Provider object for a complexity level
     list_models,        # list available providers
@@ -99,7 +105,8 @@ from model_choice import (
 
 # generate() parameters:
 #   prompt, complexity="balanced", model=None, temperature=0.7,
-#   max_tokens=2000, system=None, use_cache=True, fallback=True
+#   max_tokens=2000, system=None, use_cache=True, fallback=True,
+#   stream=False
 ```
 
 ## CLI
@@ -131,19 +138,19 @@ model_choice "review this code" -s "You are a senior engineer"
 
 ```
 model_choice/
-  __init__.py      # Public API (generate, generate_json, pick, etc.)
-  registry.py      # Provider registry -- loads config, resolves models
-  backends.py      # LiteLLM and CLI backends for making calls
-  classifier.py    # Auto-classification via local model
-  config.py        # Default config generation
-  fallback.py      # Fallback chain logic
-  cache.py         # LRU response cache
-  tracking.py      # Per-provider cost/usage tracking
-  parsers.py       # Response parsing utilities
-  cli.py           # CLI entry point
+  __init__.py   334   # Public API (generate, generate_json, pick, streaming, caching)
+  registry.py   183   # Provider registry -- loads config, resolves models
+  backends.py   220   # LiteLLM and CLI backends, sync + streaming
+  classifier.py  84   # Auto-classification via local model
+  fallback.py    83   # Fallback chain logic
+  cache.py      123   # SQLite-backed persistent LRU cache
+  tracking.py    74   # Per-provider cost/usage tracking
+  config.py      53   # Default config generation
+  parsers.py     51   # Response parsing utilities
+  cli.py        124   # CLI entry point
 ```
 
-1053 lines, 10 modules, 0 dependencies beyond litellm + pyyaml.
+1329 lines, 10 modules, 27 tests, 0 dependencies beyond litellm + pyyaml.
 
 ## License
 

@@ -5,3 +5,5 @@ dist/
 build/
 *.egg
 .rfl/
+.pytest_cache/
+rfl_*/

@@ -8,6 +8,10 @@ Usage:
     # Auto-classify: let the local model decide difficulty
     text = generate("explain quicksort", complexity="auto")
 
+    # Streaming: iterate over text chunks as they arrive
+    for chunk in generate("explain quicksort", stream=True):
+        print(chunk, end="", flush=True)
+
     # Get parsed JSON
     from model_choice import generate_json
     data = generate_json("list 5 colors as JSON", complexity="fast")
@@ -37,8 +41,10 @@ Usage:
     #   model_choice "prompt" --no-cache --no-fallback
 """
 
+from typing import Generator, Optional
+
 from .registry import Registry, Provider
-from .backends import call, GenerateResult
+from .backends import call, stream, GenerateResult
 from .parsers import parse_json_output
 from .classifier import classify
 from .cache import ResponseCache
@@ -57,6 +63,31 @@ def _resolve_complexity(complexity: str, prompt: str) -> str:
     return complexity
 
 
+def _stream_wrapper(
+    provider: Provider,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool,
+    system: Optional[str],
+    use_cache: bool,
+) -> Generator[str, None, None]:
+    """Wrap streaming backend to collect full text for caching on completion."""
+    collected = []
+    try:
+        for chunk in stream(provider, prompt, temperature, max_tokens,
+                            json_mode, system):
+            collected.append(chunk)
+            yield chunk
+    finally:
+        # Cache the complete response even if the consumer stops early
+        if use_cache and collected:
+            full_text = "".join(collected)
+            _cache.put(provider.model, prompt, temperature,
+                       max_tokens, json_mode, system, full_text)
+            _tracker.record(provider.provider, success=True)
+
+
 def generate(
     prompt: str,
     model: str | None = None,
@@ -67,8 +98,9 @@ def generate(
     system: str | None = None,
     use_cache: bool = True,
     fallback: bool = True,
-) -> str:
-    """Run a prompt. Returns raw text string.
+    stream: bool = False,
+) -> str | Generator[str, None, None]:
+    """Run a prompt. Returns raw text string, or a generator if stream=True.
 
     Args:
         prompt: The text prompt.
@@ -83,9 +115,12 @@ def generate(
         system: Optional system prompt (litellm backends only).
         use_cache: If True, return cached response for identical calls.
         fallback: If True, try next provider on failure.
+        stream: If True, return a generator yielding text chunks.
+                Streaming skips cache lookup but caches the full response
+                when the generator is exhausted.
 
     Returns:
-        Raw text from the model.
+        Raw text from the model, or Generator[str] if stream=True.
 
     Raises:
         RuntimeError: No available model found or all providers failed.
@@ -98,7 +133,19 @@ def generate(
             + (f" model={model}" if model else "")
         )
 
-    # Check cache
+    # Streaming path
+    if stream:
+        if fallback:
+            return _stream_with_fallback(
+                provider, prompt, temperature, max_tokens,
+                json_mode, system, resolved, use_cache,
+            )
+        return _stream_wrapper(
+            provider, prompt, temperature, max_tokens,
+            json_mode, system, use_cache,
+        )
+
+    # Synchronous path -- check cache first
     if use_cache:
         cached = _cache.get(provider.model, prompt, temperature,
                             max_tokens, json_mode, system)
@@ -136,6 +183,64 @@ def generate(
     except Exception as e:
         _tracker.record(provider.provider, success=False)
         raise
+
+
+def _stream_with_fallback(
+    start_provider: Provider,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+    json_mode: bool,
+    system: Optional[str],
+    complexity: str,
+    use_cache: bool,
+) -> Generator[str, None, None]:
+    """Stream with fallback: try primary, fall back to next on failure.
+
+    Falls back BEFORE yielding any chunks if the initial connection fails.
+    If streaming has already started, we let the error propagate (can't
+    cleanly switch mid-stream).
+    """
+    from .fallback import _build_fallback_chain
+
+    errors = []
+    try:
+        # Check if we can start streaming (try the first chunk)
+        gen = stream(start_provider, prompt, temperature, max_tokens,
+                     json_mode, system)
+        first_chunk = next(gen)
+    except Exception as e:
+        # Primary failed to even start -- try fallbacks
+        errors.append(f"{start_provider.label}: {e}")
+        chain = _build_fallback_chain(_registry, start_provider, complexity)
+        for fb_provider in chain:
+            try:
+                gen = stream(fb_provider, prompt, temperature, max_tokens,
+                             json_mode, system)
+                first_chunk = next(gen)
+                start_provider = fb_provider
+                break
+            except Exception as e2:
+                errors.append(f"{fb_provider.label}: {e2}")
+                continue
+        else:
+            raise RuntimeError(
+                f"All providers failed for streaming: {'; '.join(errors)}"
+            )
+
+    # Yield first chunk, then the rest, with caching
+    collected = [first_chunk]
+    yield first_chunk
+    try:
+        for chunk in gen:
+            collected.append(chunk)
+            yield chunk
+    finally:
+        if use_cache and collected:
+            full_text = "".join(collected)
+            _cache.put(start_provider.model, prompt, temperature,
+                       max_tokens, json_mode, system, full_text)
+            _tracker.record(start_provider.provider, success=True)
 
 
 def generate_json(
