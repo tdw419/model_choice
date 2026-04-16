@@ -48,6 +48,10 @@ def main():
                         help="Restart ollama and exit")
     parser.add_argument("--ollama-pull",
                         help="Pull an ollama model and exit")
+    parser.add_argument("--rate-limits", action="store_true",
+                        help="Show rate limit status and exit")
+    parser.add_argument("--rate-limit-reset", action="store_true",
+                        help="Clear all rate limit slots and exit")
 
     args = parser.parse_args()
 
@@ -55,7 +59,7 @@ def main():
                                cost_summary, cache_stats, clear_cache,
                                _resolve_complexity, list_templates,
                                ollama_status, ollama_start, ollama_restart,
-                               ollama_pull)
+                               ollama_pull, rate_limit_status, rate_limit_reset)
 
     if args.list:
         models = list_models()
@@ -100,6 +104,19 @@ def main():
         ok = ollama_pull(args.ollama_pull)
         print(f"  {'Done' if ok else 'Failed'}")
         sys.exit(0 if ok else 1)
+
+    if args.rate_limits:
+        status = rate_limit_status()
+        if not status:
+            print("  No active rate-limited requests")
+        for provider, count in status.items():
+            print(f"  {provider}: {count} active")
+        sys.exit(0)
+
+    if args.rate_limit_reset:
+        rate_limit_reset()
+        print("  Rate limit slots cleared.")
+        sys.exit(0)
 
     if args.stats:
         summary = cost_summary()

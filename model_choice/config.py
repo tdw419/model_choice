@@ -27,6 +27,8 @@ providers:
     env_key: ZAI_API_KEY
     api_base: https://api.z.ai/api/coding/paas/v4
     complexity: balanced
+    max_concurrent: 4
+    min_interval: 1.0
 
   - provider: gemini
     model: gemini-2.5-flash

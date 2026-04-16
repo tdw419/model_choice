@@ -27,6 +27,10 @@ class Provider:
     # cli fields
     cli_cmd: Optional[str] = None
 
+    # rate limiting
+    max_concurrent: Optional[int] = None   # e.g. 4 for ZAI
+    min_interval: Optional[float] = None   # e.g. 1.0 seconds
+
     # runtime -- set by Registry.refresh()
     available: Optional[bool] = field(default=None, repr=False)
 

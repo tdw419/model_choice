@@ -51,6 +51,7 @@ from .cache import ResponseCache
 from .tracking import CostTracker
 from .fallback import call_with_fallback
 from .templates import Template, resolve_template
+from .rate_limiter import get_limiter
 
 _registry = Registry()
 _cache = ResponseCache()
@@ -66,6 +67,23 @@ def _resolve_complexity(complexity: str, prompt: str) -> str:
     if complexity == "auto":
         return classify(prompt, _registry)
     return complexity
+
+
+def _rate_limit(provider: Provider):
+    """Context manager: rate-limit calls to a provider if configured.
+
+    If the provider has max_concurrent or min_interval set, acquires a slot
+    from the cross-process rate limiter. Otherwise, a no-op context manager.
+    """
+    if provider.max_concurrent or provider.min_interval:
+        return get_limiter().limit(
+            provider=provider.provider,
+            max_concurrent=provider.max_concurrent or 0,
+            min_interval=provider.min_interval or 0.0,
+            timeout=60.0,
+        )
+    from contextlib import nullcontext
+    return nullcontext()
 
 
 def _stream_wrapper(
@@ -166,17 +184,30 @@ def generate(
             + (f" model={model}" if model else "")
         )
 
-    # Streaming path
+    # Streaming path (rate-limited)
     if stream:
         if fallback:
             return _stream_with_fallback(
                 provider, prompt, temperature, max_tokens,
                 json_mode, system, resolved, use_cache,
             )
-        return _stream_wrapper(
+        # Rate limit wraps the stream start
+        limiter_ctx = _rate_limit(provider)
+        limiter_ctx.__enter__()
+        gen = _stream_wrapper(
             provider, prompt, temperature, max_tokens,
             json_mode, system, use_cache,
         )
+        # Wrap generator to release rate limit on exhaustion
+        def _rate_limited_gen():
+            try:
+                yield from gen
+            finally:
+                try:
+                    limiter_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
+        return _rate_limited_gen()
 
     # Synchronous path -- check cache first
     if use_cache:
@@ -186,17 +217,18 @@ def generate(
             _tracker.record(provider.provider, success=True)
             return cached
 
-    # Call with fallback
+    # Call with fallback (rate-limited)
     try:
-        if fallback:
-            result, used_provider = call_with_fallback(
-                _registry, provider, prompt, temperature, max_tokens,
-                json_mode, system, resolved,
-            )
-        else:
-            result = call(provider, prompt, temperature, max_tokens,
-                          json_mode, system)
-            used_provider = provider
+        with _rate_limit(provider):
+            if fallback:
+                result, used_provider = call_with_fallback(
+                    _registry, provider, prompt, temperature, max_tokens,
+                    json_mode, system, resolved,
+                )
+            else:
+                result = call(provider, prompt, temperature, max_tokens,
+                              json_mode, system)
+                used_provider = provider
 
         # Track usage
         _tracker.record(
@@ -455,3 +487,15 @@ def ollama_pull(model: str) -> bool:
     """Pull a model. Handles 'ollama/name' prefix."""
     from .ollama import pull_model
     return pull_model(model)
+
+
+# ---- rate limiting (public) ----
+
+def rate_limit_status() -> dict:
+    """Get current active requests per provider."""
+    return get_limiter().status()
+
+
+def rate_limit_reset():
+    """Clear all rate limit slots (emergency reset)."""
+    get_limiter().reset()
