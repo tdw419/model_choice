@@ -50,10 +50,14 @@ from .classifier import classify
 from .cache import ResponseCache
 from .tracking import CostTracker
 from .fallback import call_with_fallback
+from .templates import Template, resolve_template
 
 _registry = Registry()
 _cache = ResponseCache()
 _tracker = CostTracker()
+
+# Module-level template (set via configure() or env var)
+_active_template: Optional[str] = None
 
 
 def _resolve_complexity(complexity: str, prompt: str) -> str:
@@ -99,6 +103,7 @@ def generate(
     use_cache: bool = True,
     fallback: bool = True,
     stream: bool = False,
+    template: str | None = None,
 ) -> str | Generator[str, None, None]:
     """Run a prompt. Returns raw text string, or a generator if stream=True.
 
@@ -118,6 +123,9 @@ def generate(
         stream: If True, return a generator yielding text chunks.
                 Streaming skips cache lookup but caches the full response
                 when the generator is exhausted.
+        template: Named preset constraining provider selection and defaults.
+                  Falls back to module-level template from configure() or
+                  MODEL_CHOICE_TEMPLATE env var.
 
     Returns:
         Raw text from the model, or Generator[str] if stream=True.
@@ -125,11 +133,31 @@ def generate(
     Raises:
         RuntimeError: No available model found or all providers failed.
     """
+    # Resolve template: explicit arg > module-level > env var
+    tmpl_name = resolve_template(template) or _active_template
+    tmpl = _registry.get_template(tmpl_name) if tmpl_name else None
+
+    # Apply template defaults (call-level args take precedence)
+    if tmpl:
+        if complexity == "balanced":  # only override if caller didn't change
+            complexity = tmpl.default_complexity
+        if temperature == 0.7:
+            temperature = tmpl.default_temperature
+        if max_tokens == 2000:
+            max_tokens = tmpl.default_max_tokens
+        if fallback and not tmpl.fallback:
+            fallback = tmpl.fallback
+        if use_cache and not tmpl.use_cache:
+            use_cache = tmpl.use_cache
+
     resolved = _resolve_complexity(complexity, prompt)
-    provider = _registry.select(complexity=resolved, model=model)
+    provider = _registry.select(
+        complexity=resolved, model=model, template=tmpl_name
+    )
     if not provider:
         raise RuntimeError(
             f"No available model for complexity={resolved}"
+            + (f" template={tmpl_name}" if tmpl_name else "")
             + (f" model={model}" if model else "")
         )
 
@@ -252,6 +280,7 @@ def generate_json(
     system: str | None = None,
     use_cache: bool = True,
     fallback: bool = True,
+    template: str | None = None,
 ) -> object:
     """Run a prompt requesting JSON. Returns parsed Python object.
 
@@ -267,7 +296,7 @@ def generate_json(
     raw = generate(
         prompt, model, complexity, temperature, max_tokens,
         json_mode=True, system=system,
-        use_cache=use_cache, fallback=fallback,
+        use_cache=use_cache, fallback=fallback, template=template,
     )
     return parse_json_output(raw)
 
@@ -283,9 +312,12 @@ def choose(
 def pick(
     complexity: str = "balanced",
     model: str | None = None,
+    template: str | None = None,
 ) -> Provider | None:
     """Select a provider without calling it."""
-    return _registry.select(complexity=complexity, model=model)
+    tmpl_name = resolve_template(template) or _active_template
+    return _registry.select(complexity=complexity, model=model,
+                            template=tmpl_name)
 
 
 def list_models() -> list[dict]:
@@ -332,3 +364,53 @@ def clear_cache():
 def reset_stats():
     """Reset all cost tracking counters."""
     _tracker.reset()
+
+
+def configure(
+    template: str | None = None,
+    complexity: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+):
+    """Set module-level defaults for all future calls.
+
+    These defaults are overridden by per-call arguments.
+
+    Args:
+        template: Named preset to use for provider selection.
+        complexity: Default complexity tier.
+        temperature: Default sampling temperature.
+        max_tokens: Default max response tokens.
+    """
+    global _active_template, _default_complexity, _default_temperature
+    global _default_max_tokens
+
+    if template is not None:
+        _active_template = template
+    if complexity is not None:
+        _default_complexity = complexity
+    if temperature is not None:
+        _default_temperature = temperature
+    if max_tokens is not None:
+        _default_max_tokens = max_tokens
+
+
+def list_templates() -> dict[str, dict]:
+    """List all available templates with their settings."""
+    return {
+        name: {
+            "providers": tmpl.providers,
+            "default_complexity": tmpl.default_complexity,
+            "default_temperature": tmpl.default_temperature,
+            "default_max_tokens": tmpl.default_max_tokens,
+            "fallback": tmpl.fallback,
+            "use_cache": tmpl.use_cache,
+        }
+        for name, tmpl in _registry.templates.items()
+    }
+
+
+# Module-level defaults (can be overridden via configure())
+_default_complexity: str = "balanced"
+_default_temperature: float = 0.7
+_default_max_tokens: int = 2000

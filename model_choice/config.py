@@ -43,6 +43,26 @@ providers:
     auth: oauth
     cli_cmd: claude
     complexity: thorough
+
+# Templates -- named presets for different consumers
+# Use via: generate(prompt, template="ai_daemon")
+#   or:     configure(template="ai_daemon")
+#   or:     MODEL_CHOICE_TEMPLATE=ai_daemon env var
+
+templates:
+  - name: ai_daemon
+    providers:
+      - ollama
+    default_complexity: fast
+    fallback: false
+
+  - name: agent
+    providers:
+      - zai
+      - ollama
+      - gemini
+      - claude
+    default_complexity: balanced
 """
 
 

@@ -37,6 +37,7 @@ class Registry:
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path or self._default_path()
         self.providers: list[Provider] = []
+        self.templates: dict[str, "Template"] = {}
         self._env_loaded = False
         self._load()
 
@@ -58,6 +59,14 @@ class Registry:
         for entry in data.get("providers", []):
             filtered = {k: v for k, v in entry.items() if k in valid_fields}
             self.providers.append(Provider(**filtered))
+
+        # Load templates from same config
+        from .templates import BUILTINS, Template
+        for name, cfg in BUILTINS.items():
+            self.templates[name] = Template(name=name, **cfg)
+        for entry in data.get("templates", []):
+            name = entry.pop("name")
+            self.templates[name] = Template(name=name, **entry)
 
     # ---- env key loading ----
 
@@ -128,6 +137,7 @@ class Registry:
         self,
         complexity: str = "balanced",
         model: Optional[str] = None,
+        template: Optional[str] = None,
     ) -> Optional[Provider]:
         """Pick a provider for the given complexity.
 
@@ -137,32 +147,36 @@ class Registry:
 
         If model is specified, find it by model name or provider name,
         ignoring the complexity filter.
+
+        If template is specified, only consider providers in that template.
         """
         if any(p.available is None for p in self.providers):
             self.refresh()
 
+        providers = self._filter_providers(template)
+
         # Exact model or provider match (ignores complexity)
         if model:
-            for p in self.providers:
+            for p in providers:
                 if p.model == model or p.provider == model:
                     return p if p.available else None
             return None
 
         # thorough_strong: pick STRONGEST available (last in list)
         if complexity == "thorough_strong":
-            for p in reversed(self.providers):
+            for p in reversed(providers):
                 if p.available:
                     return p
             return None
 
         # balanced_only: pick cheapest provider at exactly balanced tier
         if complexity == "balanced_only":
-            for p in self.providers:
+            for p in providers:
                 tier = COMPLEXITY_ORDER.get(p.complexity, 1)
                 if tier == 1 and p.available:
                     return p
             # Fallback: try thorough if nothing at balanced
-            for p in self.providers:
+            for p in providers:
                 tier = COMPLEXITY_ORDER.get(p.complexity, 2)
                 if tier >= 1 and p.available:
                     return p
@@ -170,7 +184,7 @@ class Registry:
 
         # Pick cheapest available at or below requested complexity
         requested = COMPLEXITY_ORDER.get(complexity, 1)
-        for p in self.providers:
+        for p in providers:
             tier = COMPLEXITY_ORDER.get(p.complexity, 1)
             if tier <= requested and p.available:
                 return p
@@ -181,3 +195,38 @@ class Registry:
         if any(p.available is None for p in self.providers):
             self.refresh()
         return [p for p in self.providers if p.available]
+
+    # ---- templates ----
+
+    def _filter_providers(self, template: Optional[str]) -> list[Provider]:
+        """Filter providers to only those in the template.
+
+        If template is None or "default", returns all providers.
+        If template name is unknown, returns all providers.
+        """
+        if not template or template == "default":
+            return self.providers
+
+        tmpl = self.templates.get(template)
+        if not tmpl:
+            return self.providers
+
+        # Wildcard means all providers
+        if tmpl.providers == ["*"]:
+            return self.providers
+
+        # Filter by provider name, preserving template order
+        allowed = set(tmpl.providers)
+        filtered = [p for p in self.providers if p.provider in allowed]
+        # Re-sort to match template's provider order
+        order = {name: i for i, name in enumerate(tmpl.providers)}
+        filtered.sort(key=lambda p: order.get(p.provider, 999))
+        return filtered
+
+    def get_template(self, name: str) -> Optional["Template"]:
+        """Get a template by name. Returns None if not found."""
+        return self.templates.get(name)
+
+    def list_templates(self) -> dict[str, "Template"]:
+        """Return all loaded templates."""
+        return dict(self.templates)
