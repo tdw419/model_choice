@@ -51,6 +51,10 @@ BUILTINS: dict[str, dict] = {
         "default_complexity": "fast",
         "default_temperature": 0.7,
     },
+    "hermes": {
+        "providers": ["zai", "gemini", "claude", "ollama"],
+        "default_complexity": "balanced",
+    },
     "cloud_only": {
         "providers": ["zai", "gemini", "claude"],
         "default_complexity": "balanced",
