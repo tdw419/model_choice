@@ -58,6 +58,7 @@ _tracker = CostTracker()
 
 # Module-level template (set via configure() or env var)
 _active_template: Optional[str] = None
+_manage_ollama: bool = False
 
 
 def _resolve_complexity(complexity: str, prompt: str) -> str:
@@ -104,6 +105,7 @@ def generate(
     fallback: bool = True,
     stream: bool = False,
     template: str | None = None,
+    manage_ollama: bool = False,
 ) -> str | Generator[str, None, None]:
     """Run a prompt. Returns raw text string, or a generator if stream=True.
 
@@ -126,6 +128,8 @@ def generate(
         template: Named preset constraining provider selection and defaults.
                   Falls back to module-level template from configure() or
                   MODEL_CHOICE_TEMPLATE env var.
+        manage_ollama: If True, auto-start ollama and pull models when
+                       ollama providers are unavailable.
 
     Returns:
         Raw text from the model, or Generator[str] if stream=True.
@@ -152,7 +156,8 @@ def generate(
 
     resolved = _resolve_complexity(complexity, prompt)
     provider = _registry.select(
-        complexity=resolved, model=model, template=tmpl_name
+        complexity=resolved, model=model, template=tmpl_name,
+        manage_ollama=manage_ollama or _manage_ollama,
     )
     if not provider:
         raise RuntimeError(
@@ -313,11 +318,13 @@ def pick(
     complexity: str = "balanced",
     model: str | None = None,
     template: str | None = None,
+    manage_ollama: bool = False,
 ) -> Provider | None:
     """Select a provider without calling it."""
     tmpl_name = resolve_template(template) or _active_template
     return _registry.select(complexity=complexity, model=model,
-                            template=tmpl_name)
+                            template=tmpl_name,
+                            manage_ollama=manage_ollama or _manage_ollama)
 
 
 def list_models() -> list[dict]:
@@ -371,6 +378,7 @@ def configure(
     complexity: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    manage_ollama: bool | None = None,
 ):
     """Set module-level defaults for all future calls.
 
@@ -381,9 +389,10 @@ def configure(
         complexity: Default complexity tier.
         temperature: Default sampling temperature.
         max_tokens: Default max response tokens.
+        manage_ollama: If True, auto-start ollama and pull models.
     """
     global _active_template, _default_complexity, _default_temperature
-    global _default_max_tokens
+    global _default_max_tokens, _manage_ollama
 
     if template is not None:
         _active_template = template
@@ -393,6 +402,8 @@ def configure(
         _default_temperature = temperature
     if max_tokens is not None:
         _default_max_tokens = max_tokens
+    if manage_ollama is not None:
+        _manage_ollama = manage_ollama
 
 
 def list_templates() -> dict[str, dict]:
@@ -414,3 +425,33 @@ def list_templates() -> dict[str, dict]:
 _default_complexity: str = "balanced"
 _default_temperature: float = 0.7
 _default_max_tokens: int = 2000
+
+
+# ---- ollama management (public) ----
+
+def ollama_status() -> dict:
+    """Get ollama status: running, models loaded, health."""
+    from .ollama import health_check, list_models
+    healthy = health_check()
+    return {
+        "running": healthy,
+        "models": list_models() if healthy else [],
+    }
+
+
+def ollama_start() -> bool:
+    """Start ollama if not running. Returns True if healthy after attempt."""
+    from .ollama import start_ollama
+    return start_ollama()
+
+
+def ollama_restart() -> bool:
+    """Restart ollama. Returns True if healthy after restart."""
+    from .ollama import restart_ollama
+    return restart_ollama()
+
+
+def ollama_pull(model: str) -> bool:
+    """Pull a model. Handles 'ollama/name' prefix."""
+    from .ollama import pull_model
+    return pull_model(model)

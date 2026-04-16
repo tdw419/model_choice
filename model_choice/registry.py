@@ -101,13 +101,8 @@ class Registry:
     def check_available(self, provider: Provider) -> bool:
         """Check if a single provider is reachable/authed/installed."""
         if provider.auth == "local":
-            try:
-                urllib.request.urlopen(
-                    f"{provider.api_base}/api/tags", timeout=5
-                )
-                return True
-            except Exception:
-                return False
+            from .ollama import health_check
+            return health_check(provider.api_base)
 
         elif provider.auth == "api_key":
             self._ensure_env_keys()
@@ -138,6 +133,7 @@ class Registry:
         complexity: str = "balanced",
         model: Optional[str] = None,
         template: Optional[str] = None,
+        manage_ollama: bool = False,
     ) -> Optional[Provider]:
         """Pick a provider for the given complexity.
 
@@ -149,11 +145,18 @@ class Registry:
         ignoring the complexity filter.
 
         If template is specified, only consider providers in that template.
+
+        If manage_ollama is True, attempt to start ollama and load models
+        when ollama providers are unavailable.
         """
         if any(p.available is None for p in self.providers):
             self.refresh()
 
         providers = self._filter_providers(template)
+
+        # Auto-manage ollama if requested
+        if manage_ollama:
+            providers = self._ensure_ollama(providers)
 
         # Exact model or provider match (ignores complexity)
         if model:
@@ -230,3 +233,44 @@ class Registry:
     def list_templates(self) -> dict[str, "Template"]:
         """Return all loaded templates."""
         return dict(self.templates)
+
+    # ---- ollama management ----
+
+    def _ensure_ollama(self, providers: list[Provider]) -> list[Provider]:
+        """Auto-manage ollama providers: start, pull model, recover.
+
+        For each ollama provider that's unavailable:
+        1. Try to start ollama
+        2. Try to pull the model
+        3. If still unhealthy, try restart
+
+        Updates provider.available in place.
+        """
+        from .ollama import ensure_running, recover, health_check
+
+        for p in providers:
+            if p.auth != "local" or p.available:
+                continue
+
+            # Ollama is down -- try to fix it
+            model_name = p.model.split("/", 1)[-1] if "/" in p.model else p.model
+
+            ok = ensure_running(
+                model=model_name,
+                api_base=p.api_base,
+                auto_start=True,
+                auto_pull=True,
+            )
+
+            if ok:
+                p.available = True
+            else:
+                # Last resort: full restart
+                if recover(p.api_base):
+                    # Re-check model after restart
+                    from .ollama import model_loaded, pull_model
+                    if not model_loaded(model_name, p.api_base):
+                        pull_model(model_name)
+                    p.available = health_check(p.api_base)
+
+        return providers

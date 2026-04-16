@@ -38,12 +38,24 @@ def main():
                         help="Use a named template (e.g. ollama_only, ai_daemon)")
     parser.add_argument("--templates", action="store_true",
                         help="List available templates and exit")
+    parser.add_argument("--manage-ollama", action="store_true",
+                        help="Auto-start ollama and pull models if unavailable")
+    parser.add_argument("--ollama-status", action="store_true",
+                        help="Show ollama status and exit")
+    parser.add_argument("--ollama-start", action="store_true",
+                        help="Start ollama and exit")
+    parser.add_argument("--ollama-restart", action="store_true",
+                        help="Restart ollama and exit")
+    parser.add_argument("--ollama-pull",
+                        help="Pull an ollama model and exit")
 
     args = parser.parse_args()
 
     from model_choice import (list_models, generate, generate_json, pick,
                                cost_summary, cache_stats, clear_cache,
-                               _resolve_complexity, list_templates)
+                               _resolve_complexity, list_templates,
+                               ollama_status, ollama_start, ollama_restart,
+                               ollama_pull)
 
     if args.list:
         models = list_models()
@@ -62,6 +74,32 @@ def main():
             print(f"  {name:15s} providers=[{providers}] "
                   f"complexity={cfg['default_complexity']}")
         sys.exit(0)
+
+    if args.ollama_status:
+        status = ollama_status()
+        if status["running"]:
+            print("  Ollama: running")
+            for m in status["models"]:
+                print(f"    {m}")
+        else:
+            print("  Ollama: not running")
+        sys.exit(0)
+
+    if args.ollama_start:
+        ok = ollama_start()
+        print(f"  Ollama: {'running' if ok else 'failed to start'}")
+        sys.exit(0 if ok else 1)
+
+    if args.ollama_restart:
+        ok = ollama_restart()
+        print(f"  Ollama: {'running' if ok else 'failed to restart'}")
+        sys.exit(0 if ok else 1)
+
+    if args.ollama_pull:
+        print(f"  Pulling {args.ollama_pull}...")
+        ok = ollama_pull(args.ollama_pull)
+        print(f"  {'Done' if ok else 'Failed'}")
+        sys.exit(0 if ok else 1)
 
     if args.stats:
         summary = cost_summary()
@@ -85,13 +123,14 @@ def main():
         sys.exit(0)
 
     if not args.prompt:
-        parser.error("prompt is required unless --list/--templates/--stats/--clear-cache is given")
+        parser.error("prompt is required unless --list/--templates/--ollama-status/--ollama-start/--ollama-restart/--ollama-pull/--stats/--clear-cache is given")
 
     if args.verbose:
         # Show which model would be picked (runs classifier if auto)
         resolved = _resolve_complexity(args.complexity, args.prompt or "")
         provider = pick(complexity=resolved, model=args.model,
-                        template=args.template)
+                        template=args.template,
+                        manage_ollama=args.manage_ollama)
         if provider:
             if args.complexity == "auto":
                 print(f"[model_choice] classified as {resolved}, using {provider.label}",
@@ -119,6 +158,7 @@ def main():
                 use_cache=use_cache,
                 fallback=use_fallback,
                 template=args.template,
+                manage_ollama=args.manage_ollama,
             )
             print(json.dumps(result, indent=2))
         else:
@@ -132,6 +172,7 @@ def main():
                 use_cache=use_cache,
                 fallback=use_fallback,
                 template=args.template,
+                manage_ollama=args.manage_ollama,
             )
             print(result)
     except (RuntimeError, ValueError) as e:

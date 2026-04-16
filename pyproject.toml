@@ -1,6 +1,6 @@
 [project]
 name = "model_choice"
-version = "1.2.0"
+version = "1.3.0"
 description = "Universal LLM model selector and caller -- pick the right model for the job"
 requires-python = ">=3.10"
 dependencies = ["litellm", "pyyaml"]
